@@ -68,7 +68,6 @@ import com.example.rossblocks.game.GameShapes
 import com.example.rossblocks.game.GameViewModel
 import com.example.rossblocks.game.SavedGame
 import com.example.rossblocks.game.UiPiece
-import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 
@@ -82,8 +81,8 @@ private fun effectiveGapPx(cellHpx: Float): Float =
     min(maxOf(12f, cellHpx * 0.08f), cellHpx * 0.45f)
 
 /**
- * 手指在棋盘内时：用触点所在格行决定形状底行（多块则向上延伸），横坐标仍按形状中心对齐触点。
- * 不再用 localY - gap 推 topY：否则手指在最后一格时会被整体上移一整行，导致最底一行永远放不上。
+ * 手指在棋盘内：触点落在哪一格，就把形状的「底行」「右列」对齐到该格（多格则向左、向上延伸）。
+ * 与「中心 + floor」相比，避免 board 像素取整后最底行、最右列常被算到上一行/左一列。
  */
 private fun anchorFromFingerOnBoard(
     localX: Float,
@@ -95,10 +94,9 @@ private fun anchorFromFingerOnBoard(
     boardW: Float,
     boardH: Float
 ): Pair<Int, Int> {
-    val shapeW = maxC * cw
-    var leftX = localX - shapeW / 2f
-    leftX = leftX.coerceIn(0f, boardW - shapeW)
-    val anchorCol = floor((leftX / cw).toDouble()).toInt().coerceIn(0, SavedGame.GRID_SIZE - maxC)
+    val xClamped = localX.coerceIn(0f, max(0f, boardW - 1e-3f))
+    val fingerCol = (xClamped / cw).toInt().coerceIn(0, SavedGame.GRID_SIZE - 1)
+    val anchorCol = (fingerCol - (maxC - 1)).coerceIn(0, SavedGame.GRID_SIZE - maxC)
     val yClamped = localY.coerceIn(0f, max(0f, boardH - 1e-3f))
     val fingerRow = (yClamped / ch).toInt().coerceIn(0, SavedGame.GRID_SIZE - 1)
     val anchorRow = (fingerRow - (maxR - 1)).coerceIn(0, SavedGame.GRID_SIZE - maxR)

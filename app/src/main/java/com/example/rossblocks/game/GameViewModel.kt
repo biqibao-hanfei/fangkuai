@@ -14,7 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private const val CLEAR_STEP_MS = 7
-private const val CLEAR_ANIM_TRIM_MS = 500
+private const val CLEAR_ANIM_TRIM_MS = 800
 
 data class UiPiece(val shapeIndex: Int, val colorIndex: Int)
 
