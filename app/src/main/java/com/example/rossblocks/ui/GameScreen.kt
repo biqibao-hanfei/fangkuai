@@ -4,7 +4,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.filled.Gavel
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
@@ -44,6 +46,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.awaitPointerEvent
+import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -58,6 +62,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.example.rossblocks.game.GameShapes
@@ -70,6 +75,9 @@ private data class DragOverlay(
     val slot: Int,
     val fingerWindow: Offset
 )
+
+/** 棋盘上预览与落点：手指上移一点，避免挡住格心 */
+private fun fingerLiftPx(cellHpx: Float): Float = cellHpx * 0.55f + 40f
 
 @Composable
 fun GameScreen(
@@ -131,6 +139,7 @@ fun GameScreen(
                 viewModel = viewModel,
                 state = state,
                 boardLc = boardLc,
+                cellHpx = cellHpx,
                 dragOverlaySetter = { dragOverlay = it },
                 dragOverlayGetter = { dragOverlay }
             )
@@ -148,7 +157,10 @@ fun GameScreen(
         )
 
         if (state.paused && !state.showStuckDialog && !state.showExitConfirm) {
-            PauseOverlay(viewModel)
+            PauseOverlay(
+                viewModel = viewModel,
+                modifier = Modifier.zIndex(400f)
+            )
         }
         if (state.showStuckDialog) {
             StuckDialog(viewModel)
@@ -342,10 +354,12 @@ private fun TrayRow(
     viewModel: GameViewModel,
     state: com.example.rossblocks.game.GameUiState,
     boardLc: LayoutCoordinates?,
+    cellHpx: Float,
     dragOverlaySetter: (DragOverlay?) -> Unit,
     dragOverlayGetter: () -> DragOverlay?
 ) {
     val boardLcState = rememberUpdatedState(boardLc)
+    val cellHState = rememberUpdatedState(cellHpx)
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly,
@@ -371,25 +385,50 @@ private fun TrayRow(
                         state.pieces,
                         state.paused,
                         state.hammerMode,
-                        state.showStuckDialog
+                        state.showStuckDialog,
+                        state.showExitConfirm
                     ) {
-                        if (state.paused || state.hammerMode || state.showStuckDialog) {
+                        if (state.paused || state.hammerMode || state.showStuckDialog || state.showExitConfirm) {
                             return@pointerInput
                         }
-                        detectDragGestures(
-                            onDragStart = { pos ->
-                                viewModel.selectTraySlot(index)
-                                val lc = slotLcState.value
-                                if (lc != null && lc.isAttached) {
-                                    dragOverlaySetter(
-                                        DragOverlay(
-                                            slot = index,
-                                            fingerWindow = lc.localToWindow(pos)
-                                        )
-                                    )
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            down.consume()
+                            val pointerId = down.id
+                            viewModel.selectTraySlot(index)
+                            val lcStart = slotLcState.value
+                            if (lcStart == null || !lcStart.isAttached) return@awaitEachGesture
+                            dragOverlaySetter(
+                                DragOverlay(
+                                    slot = index,
+                                    fingerWindow = lcStart.localToWindow(down.position)
+                                )
+                            )
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.find { it.id == pointerId } ?: continue
+                                if (change.changedToUp()) {
+                                    val cur = dragOverlayGetter()
+                                    val blc = boardLcState.value
+                                    if (cur != null && blc != null && blc.isAttached) {
+                                        val local = blc.windowToLocal(cur.fingerWindow)
+                                        val w = blc.size.width.toFloat()
+                                        val h = blc.size.height.toFloat()
+                                        val cw = w / SavedGame.GRID_SIZE
+                                        val ch = h / SavedGame.GRID_SIZE
+                                        val cellH = if (cellHState.value > 1f) cellHState.value else ch
+                                        val lift = fingerLiftPx(cellH)
+                                        if (local.x in 0f..w && local.y in 0f..h) {
+                                            val col = floor((local.x / cw).toDouble()).toInt()
+                                            val row = floor(((local.y - lift) / ch).coerceAtLeast(0f).toDouble()).toInt()
+                                            if (row in 0 until SavedGame.GRID_SIZE && col in 0 until SavedGame.GRID_SIZE) {
+                                                viewModel.tryPlaceFromDrag(cur.slot, row, col)
+                                            }
+                                        }
+                                    }
+                                    dragOverlaySetter(null)
+                                    break
                                 }
-                            },
-                            onDrag = { change, _ ->
                                 change.consume()
                                 val lc = slotLcState.value
                                 val cur = dragOverlayGetter()
@@ -398,33 +437,13 @@ private fun TrayRow(
                                         cur.copy(fingerWindow = lc.localToWindow(change.position))
                                     )
                                 }
-                            },
-                            onDragCancel = { dragOverlaySetter(null) },
-                            onDragEnd = {
-                                val cur = dragOverlayGetter()
-                                val blc = boardLcState.value
-                                if (cur != null && blc != null && blc.isAttached) {
-                                    val local = blc.windowToLocal(cur.fingerWindow)
-                                    val w = blc.size.width.toFloat()
-                                    val h = blc.size.height.toFloat()
-                                    val cw = w / SavedGame.GRID_SIZE
-                                    val ch = h / SavedGame.GRID_SIZE
-                                    if (local.x in 0f..w && local.y in 0f..h) {
-                                        val col = floor((local.x / cw).toDouble()).toInt()
-                                        val row = floor((local.y / ch).toDouble()).toInt()
-                                        if (row in 0 until SavedGame.GRID_SIZE && col in 0 until SavedGame.GRID_SIZE) {
-                                            viewModel.tryPlaceFromDrag(cur.slot, row, col)
-                                        }
-                                    }
-                                }
-                                dragOverlaySetter(null)
                             }
-                        )
+                        }
                     }
             ) {
                 TrayPieceMini(
                     piece = piece,
-                    cellDp = 22.dp,
+                    cellDp = 24.dp,
                     modifier = Modifier.alpha(if (draggingHere) 0f else 1f)
                 )
             }
@@ -479,50 +498,54 @@ private fun DragPreviewLayer(
     viewModel: GameViewModel,
     density: androidx.compose.ui.unit.Density
 ) {
-    val d = drag ?: return
-    val rl = rootLc ?: return
-    val bl = boardLc ?: return
-    if (!bl.isAttached || !rl.isAttached) return
-    val piece = state.pieces.getOrNull(d.slot) ?: return
-    val shape = GameShapes.shapes.getOrNull(piece.shapeIndex) ?: return
-    val maxR = shape.maxOf { it.first } + 1
-    val maxC = shape.maxOf { it.second } + 1
+    Box(Modifier.fillMaxSize().zIndex(320f)) {
+        val d = drag ?: return@Box
+        val rl = rootLc ?: return@Box
+        val bl = boardLc ?: return@Box
+        if (!bl.isAttached || !rl.isAttached) return@Box
+        if (cellWpx <= 0f || cellHpx <= 0f) return@Box
+        val piece = state.pieces.getOrNull(d.slot) ?: return@Box
+        val shape = GameShapes.shapes.getOrNull(piece.shapeIndex) ?: return@Box
+        val maxR = shape.maxOf { it.first } + 1
+        val maxC = shape.maxOf { it.second } + 1
 
-    val localB = bl.windowToLocal(d.fingerWindow)
-    val w = bl.size.width.toFloat()
-    val h = bl.size.height.toFloat()
-    val onBoard = localB.x in 0f..w && localB.y in 0f..h
-    val anchorCol = floor((localB.x / cellWpx).toDouble()).toInt()
-    val anchorRow = floor((localB.y / cellHpx).toDouble()).toInt()
-    val validOnBoard = onBoard &&
-        anchorRow in 0 until SavedGame.GRID_SIZE &&
-        anchorCol in 0 until SavedGame.GRID_SIZE &&
-        viewModel.canPlacePreview(d.slot, anchorRow, anchorCol)
+        val localB = bl.windowToLocal(d.fingerWindow)
+        val w = bl.size.width.toFloat()
+        val h = bl.size.height.toFloat()
+        val onBoard = localB.x in 0f..w && localB.y in 0f..h
+        val lift = fingerLiftPx(cellHpx)
+        val localAdjY = (localB.y - lift).coerceAtLeast(0f)
+        val anchorCol = floor((localB.x / cellWpx).toDouble()).toInt()
+        val anchorRow = floor((localAdjY / cellHpx).toDouble()).toInt()
+        val validOnBoard = onBoard &&
+            anchorRow in 0 until SavedGame.GRID_SIZE &&
+            anchorCol in 0 until SavedGame.GRID_SIZE &&
+            viewModel.canPlacePreview(d.slot, anchorRow, anchorCol)
 
-    val topLeftRoot = if (onBoard) {
-        val topLeftBoardPx = Offset(anchorCol * cellWpx, anchorRow * cellHpx)
-        val topLeftWin = bl.localToWindow(topLeftBoardPx)
-        rl.windowToLocal(topLeftWin)
-    } else {
-        val fingerRoot = rl.windowToLocal(d.fingerWindow)
-        Offset(
-            fingerRoot.x - (maxC * cellWpx) / 2f,
-            fingerRoot.y - (maxR * cellHpx) / 2f
-        )
-    }
+        val shapeW = maxC * cellWpx
+        val shapeH = maxR * cellHpx
+        val gapBelowFinger = maxOf(12f, cellHpx * 0.08f)
 
-    val widthDp = with(density) { (maxC * cellWpx).toDp() }
-    val heightDp = with(density) { (maxR * cellHpx).toDp() }
-    val cellDpW = with(density) { cellWpx.toDp() }
-    val cellDpH = with(density) { cellHpx.toDp() }
+        val topLeftRoot = if (onBoard) {
+            val topLeftBoardPx = Offset(anchorCol * cellWpx, anchorRow * cellHpx)
+            val topLeftWin = bl.localToWindow(topLeftBoardPx)
+            rl.windowToLocal(topLeftWin)
+        } else {
+            val fingerRoot = rl.windowToLocal(d.fingerWindow)
+            Offset(
+                fingerRoot.x - shapeW / 2f,
+                fingerRoot.y - shapeH - gapBelowFinger
+            )
+        }
 
-    val color = GameShapes.palette[piece.colorIndex % GameShapes.palette.size]
-    val invalidTint = !validOnBoard || !onBoard
+        val widthDp = with(density) { shapeW.toDp() }
+        val heightDp = with(density) { shapeH.toDp() }
+        val cellDpW = with(density) { cellWpx.toDp() }
+        val cellDpH = with(density) { cellHpx.toDp() }
 
-    Box(
-        Modifier
-            .fillMaxSize()
-    ) {
+        val color = GameShapes.palette[piece.colorIndex % GameShapes.palette.size]
+        val invalidTint = !validOnBoard || !onBoard
+
         Column(
             Modifier
                 .offset {
@@ -562,9 +585,12 @@ private fun DragPreviewLayer(
 }
 
 @Composable
-private fun PauseOverlay(viewModel: GameViewModel) {
+private fun PauseOverlay(
+    viewModel: GameViewModel,
+    modifier: Modifier = Modifier
+) {
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.55f)),
         contentAlignment = Alignment.Center
@@ -575,6 +601,13 @@ private fun PauseOverlay(viewModel: GameViewModel) {
                 Spacer(Modifier.height(18.dp))
                 Button(onClick = { viewModel.togglePause() }) {
                     Text("继续游戏", fontSize = 18.sp)
+                }
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = { viewModel.restartFromPause() },
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("重新开始", fontSize = 17.sp, color = Color(0xFFFBBF24))
                 }
             }
         }

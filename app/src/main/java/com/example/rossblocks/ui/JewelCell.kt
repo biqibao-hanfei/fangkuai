@@ -25,9 +25,9 @@ fun JewelCell(
     pulse: Boolean = false
 ) {
     val density = LocalDensity.current
-    val top = colorLerp(base, Color.White, 0.45f)
+    val top = colorLerp(base, Color.White, 0.58f)
     val mid = base
-    val bottom = colorLerp(base, Color.Black, 0.35f)
+    val bottom = colorLerp(base, Color.Black, 0.38f)
     BoxWithConstraints(modifier) {
         val wPx = with(density) { maxWidth.toPx() }
         val hPx = with(density) { maxHeight.toPx() }
@@ -44,7 +44,7 @@ fun JewelCell(
                 )
                 .border(
                     1.dp,
-                    Color.White.copy(alpha = if (pulse) 0.85f else 0.4f),
+                    Color.White.copy(alpha = if (pulse) 0.9f else 0.52f),
                     RoundedCornerShape(5.dp)
                 )
         ) {

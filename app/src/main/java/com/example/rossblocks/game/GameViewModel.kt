@@ -137,24 +137,36 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stuckRestart() {
         viewModelScope.launch {
-            repo.maybeUpdateHighScore(uiState.score)
-            val high = repo.getHighScore()
-            uiState = uiState.copy(
-                grid = SavedGame.emptyGrid(),
-                pieces = List(4) {
-                    UiPiece(GameShapes.randomShapeIndex(), GameShapes.randomColorIndex())
-                },
-                score = 0,
-                highScore = high,
-                hammerMode = false,
-                showStuckDialog = false,
-                paused = false,
-                selectedTrayIndex = 0,
-                pulseClearCell = null
-            )
-            persistNow()
-            evaluateStuck()
+            restartGameInternal(closeStuckDialog = true)
         }
+    }
+
+    /** 暂停面板内「重新开始」，无二次确认 */
+    fun restartFromPause() {
+        viewModelScope.launch {
+            restartGameInternal(closeStuckDialog = false)
+            uiState = uiState.copy(paused = false)
+        }
+    }
+
+    private suspend fun restartGameInternal(closeStuckDialog: Boolean) {
+        repo.maybeUpdateHighScore(uiState.score)
+        val high = repo.getHighScore()
+        uiState = uiState.copy(
+            grid = SavedGame.emptyGrid(),
+            pieces = List(4) {
+                UiPiece(GameShapes.randomShapeIndex(), GameShapes.randomColorIndex())
+            },
+            score = 0,
+            highScore = high,
+            hammerMode = false,
+            showStuckDialog = if (closeStuckDialog) false else uiState.showStuckDialog,
+            paused = if (closeStuckDialog) false else uiState.paused,
+            selectedTrayIndex = 0,
+            pulseClearCell = null
+        )
+        persistNow()
+        evaluateStuck()
     }
 
     fun tapCell(row: Int, col: Int) {
@@ -251,13 +263,15 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
             val order = buildClearOrder(snapshotRows, snapshotCols)
             var step = 0
-            for ((r, c) in order) {
-                delay(38)
-                sound.playClearStep(step++)
-                uiState = uiState.copy(pulseClearCell = r to c)
-                val i = r * SavedGame.GRID_SIZE + c
-                if (i in grid.indices) grid[i] = -1
-                uiState = uiState.copy(grid = grid.toList())
+            for (chunk in order.chunked(10)) {
+                delay(2)
+                for ((r, c) in chunk) {
+                    sound.playClearStep(step++)
+                    uiState = uiState.copy(pulseClearCell = r to c)
+                    val i = r * SavedGame.GRID_SIZE + c
+                    if (i in grid.indices) grid[i] = -1
+                    uiState = uiState.copy(grid = grid.toList())
+                }
             }
 
             sound.playClearFinish()

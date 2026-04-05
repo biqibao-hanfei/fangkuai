@@ -4,15 +4,16 @@ import androidx.compose.ui.graphics.Color
 
 object GameShapes {
 
+    /** 高饱和、格子上好辨认（参考休闲方块类配色） */
     val palette: List<Color> = listOf(
-        Color(0xFF38BDF8),
-        Color(0xFFF472B6),
-        Color(0xFFFBBF24),
-        Color(0xFFA78BFA),
-        Color(0xFF34D399),
-        Color(0xFFFB7185),
-        Color(0xFF2DD4BF),
-        Color(0xFFFACC15)
+        Color(0xFFFF1744),
+        Color(0xFFFFC400),
+        Color(0xFF76FF03),
+        Color(0xFF00B0FF),
+        Color(0xFFD500F9),
+        Color(0xFFFF6D00),
+        Color(0xFF00E5FF),
+        Color(0xFFFF4081)
     )
 
     /** Each shape: list of (row, col) relative to bounding-box top-left (min = 0). */
