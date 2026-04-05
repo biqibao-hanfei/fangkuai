@@ -46,6 +46,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.awaitPointerEvent
 import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -69,6 +70,7 @@ import com.example.rossblocks.game.GameViewModel
 import com.example.rossblocks.game.SavedGame
 import com.example.rossblocks.game.UiPiece
 import kotlin.math.floor
+import kotlin.math.max
 import kotlin.math.min
 
 private data class DragOverlay(
@@ -81,10 +83,10 @@ private fun effectiveGapPx(cellHpx: Float): Float =
     min(maxOf(12f, cellHpx * 0.08f), cellHpx * 0.45f)
 
 /**
- * 手指在棋盘内时：形状底边对齐触点上方 [gap]，据此算边界框左上角格坐标（夹紧使整块在 10×10 内）。
- * 与旧版「格心 + fingerLift」不同，可避免最底一行被算到上一行。
+ * 手指在棋盘内时：用触点所在格行决定形状底行（多块则向上延伸），横坐标仍按形状中心对齐触点。
+ * 不再用 localY - gap 推 topY：否则手指在最后一格时会被整体上移一整行，导致最底一行永远放不上。
  */
-private fun anchorFromBottomAlignedFinger(
+private fun anchorFromFingerOnBoard(
     localX: Float,
     localY: Float,
     maxR: Int,
@@ -95,14 +97,12 @@ private fun anchorFromBottomAlignedFinger(
     boardH: Float
 ): Pair<Int, Int> {
     val shapeW = maxC * cw
-    val shapeH = maxR * ch
-    val gap = effectiveGapPx(ch)
-    val bottomY = (localY - gap).coerceIn(shapeH, boardH)
-    val topY = bottomY - shapeH
     var leftX = localX - shapeW / 2f
     leftX = leftX.coerceIn(0f, boardW - shapeW)
-    val anchorRow = floor((topY / ch).toDouble()).toInt().coerceIn(0, SavedGame.GRID_SIZE - maxR)
     val anchorCol = floor((leftX / cw).toDouble()).toInt().coerceIn(0, SavedGame.GRID_SIZE - maxC)
+    val yClamped = localY.coerceIn(0f, max(0f, boardH - 1e-3f))
+    val fingerRow = (yClamped / ch).toInt().coerceIn(0, SavedGame.GRID_SIZE - 1)
+    val anchorRow = (fingerRow - (maxR - 1)).coerceIn(0, SavedGame.GRID_SIZE - maxR)
     return anchorRow to anchorCol
 }
 
@@ -374,6 +374,7 @@ private fun TrayRow(
     dragOverlayGetter: () -> DragOverlay?
 ) {
     val boardLcState = rememberUpdatedState(boardLc)
+    val stateRef = rememberUpdatedState(state)
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly,
@@ -396,64 +397,71 @@ private fun TrayRow(
                     )
                     .pointerInput(
                         index,
-                        state,
                         state.paused,
                         state.hammerMode,
                         state.showStuckDialog,
                         state.showExitConfirm
                     ) {
-                        if (state.paused || state.hammerMode || state.showStuckDialog || state.showExitConfirm) {
+                        val sBlock = stateRef.value
+                        if (sBlock.paused || sBlock.hammerMode || sBlock.showStuckDialog || sBlock.showExitConfirm) {
                             return@pointerInput
                         }
                         awaitEachGesture {
-                            val down = awaitFirstDown(requireUnconsumed = false)
-                            down.consume()
-                            val pointerId = down.id
-                            viewModel.selectTraySlot(index)
-                            val lcStart = slotLcState.value
-                            if (lcStart == null || !lcStart.isAttached) return@awaitEachGesture
-                            dragOverlaySetter(
-                                DragOverlay(
-                                    slot = index,
-                                    fingerWindow = lcStart.localToWindow(down.position)
+                            try {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                down.consume()
+                                val pointerId = down.id
+                                viewModel.selectTraySlot(index)
+                                val lcStart = slotLcState.value
+                                if (lcStart == null || !lcStart.isAttached) return@awaitEachGesture
+                                dragOverlaySetter(
+                                    DragOverlay(
+                                        slot = index,
+                                        fingerWindow = lcStart.localToWindow(down.position)
+                                    )
                                 )
-                            )
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                val change = event.changes.find { it.id == pointerId } ?: continue
-                                if (change.changedToUp()) {
-                                    val cur = dragOverlayGetter()
-                                    val blc = boardLcState.value
-                                    if (cur != null && blc != null && blc.isAttached) {
-                                        val local = blc.windowToLocal(cur.fingerWindow)
-                                        val w = blc.size.width.toFloat()
-                                        val h = blc.size.height.toFloat()
-                                        val cw = w / SavedGame.GRID_SIZE
-                                        val ch = h / SavedGame.GRID_SIZE
-                                        if (local.x in 0f..w && local.y in 0f..h) {
-                                            val piece = state.pieces.getOrNull(cur.slot)
-                                            val shapeCells =
-                                                piece?.let { GameShapes.shapes.getOrNull(it.shapeIndex) }
-                                            if (piece != null && shapeCells != null) {
-                                                val maxR = shapeCells.maxOf { it.first } + 1
-                                                val maxC = shapeCells.maxOf { it.second } + 1
-                                                val (row, col) = anchorFromBottomAlignedFinger(
-                                                    local.x, local.y, maxR, maxC, cw, ch, w, h
-                                                )
-                                                viewModel.tryPlaceFromDrag(cur.slot, row, col)
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.find { it.id == pointerId } ?: continue
+                                    if (change.changedToUp()) {
+                                        val cur = dragOverlayGetter()
+                                        val blc = boardLcState.value
+                                        if (cur != null && blc != null && blc.isAttached) {
+                                            val local = blc.windowToLocal(cur.fingerWindow)
+                                            val w = blc.size.width.toFloat()
+                                            val h = blc.size.height.toFloat()
+                                            val cw = w / SavedGame.GRID_SIZE
+                                            val ch = h / SavedGame.GRID_SIZE
+                                            if (local.x in 0f..w && local.y in 0f..h) {
+                                                val sUp = stateRef.value
+                                                val piece = sUp.pieces.getOrNull(cur.slot)
+                                                val shapeCells =
+                                                    piece?.let { GameShapes.shapes.getOrNull(it.shapeIndex) }
+                                                if (piece != null && shapeCells != null) {
+                                                    val maxR = shapeCells.maxOf { it.first } + 1
+                                                    val maxC = shapeCells.maxOf { it.second } + 1
+                                                    val (row, col) = anchorFromFingerOnBoard(
+                                                        local.x, local.y, maxR, maxC, cw, ch, w, h
+                                                    )
+                                                    viewModel.tryPlaceFromDrag(cur.slot, row, col)
+                                                }
                                             }
                                         }
+                                        dragOverlaySetter(null)
+                                        break
                                     }
-                                    dragOverlaySetter(null)
-                                    break
+                                    change.consume()
+                                    val lc = slotLcState.value
+                                    val cur = dragOverlayGetter()
+                                    if (lc != null && lc.isAttached && cur != null) {
+                                        dragOverlaySetter(
+                                            cur.copy(fingerWindow = lc.localToWindow(change.position))
+                                        )
+                                    }
                                 }
-                                change.consume()
-                                val lc = slotLcState.value
-                                val cur = dragOverlayGetter()
-                                if (lc != null && lc.isAttached && cur != null) {
-                                    dragOverlaySetter(
-                                        cur.copy(fingerWindow = lc.localToWindow(change.position))
-                                    )
+                            } finally {
+                                if (dragOverlayGetter()?.slot == index) {
+                                    dragOverlaySetter(null)
                                 }
                             }
                         }
@@ -537,7 +545,7 @@ private fun DragPreviewLayer(
         val gapBelowFinger = effectiveGapPx(cellHpx)
 
         val (anchorRow, anchorCol) = if (onBoard) {
-            anchorFromBottomAlignedFinger(
+            anchorFromFingerOnBoard(
                 localB.x, localB.y, maxR, maxC, cellWpx, cellHpx, w, h
             )
         } else {

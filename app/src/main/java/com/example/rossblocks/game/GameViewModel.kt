@@ -13,6 +13,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+private const val CLEAR_STEP_MS = 7
+private const val CLEAR_ANIM_TRIM_MS = 500
+
 data class UiPiece(val shapeIndex: Int, val colorIndex: Int)
 
 data class GameUiState(
@@ -262,9 +265,13 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             val order = buildClearOrder(snapshotRows, snapshotCols)
+            val clearCount = order.size
+            val targetTotalMs =
+                (CLEAR_STEP_MS * clearCount - CLEAR_ANIM_TRIM_MS).coerceAtLeast(clearCount)
+            val delayPerCellMs = if (clearCount > 0) targetTotalMs / clearCount else 0
             var step = 0
             for ((r, c) in order) {
-                delay(7)
+                delay(delayPerCellMs.toLong())
                 sound.playClearStep(step++)
                 uiState = uiState.copy(pulseClearCell = r to c)
                 val i = r * SavedGame.GRID_SIZE + c
