@@ -1,0 +1,42 @@
+# 云端打包：推送到 GitHub 后在 Actions 里下载 APK，无需本机 Android Studio。
+# 用法：1) 在 github.com 新建仓库并推送本工程  2) Actions → Build debug APK → Run workflow
+#       或 push 到 main/master 会自动构建  3) 任务完成后在 Artifacts 下载 ross-blocks-debug.zip
+
+name: Build debug APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Accept SDK licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Install compile SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Assemble debug
+        run: ./gradlew assembleDebug --stacktrace --no-daemon
+        env:
+          GRADLE_OPTS: -Xmx3g
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ross-blocks-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
