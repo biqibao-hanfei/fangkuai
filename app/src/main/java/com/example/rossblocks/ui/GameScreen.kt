@@ -3,8 +3,10 @@ package com.example.rossblocks.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -18,11 +20,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Gavel
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -35,9 +38,11 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -45,8 +50,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -58,6 +66,11 @@ import com.example.rossblocks.game.SavedGame
 import com.example.rossblocks.game.UiPiece
 import kotlin.math.floor
 
+private data class DragOverlay(
+    val slot: Int,
+    val fingerWindow: Offset
+)
+
 @Composable
 fun GameScreen(
     viewModel: GameViewModel,
@@ -65,6 +78,7 @@ fun GameScreen(
 ) {
     val state = viewModel.uiState
     val lifecycleOwner = LocalLifecycleOwner.current
+    val density = LocalDensity.current
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -77,10 +91,15 @@ fun GameScreen(
     BackHandler { viewModel.requestExitConfirm() }
 
     var boardLc by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var rootLc by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var cellWpx by remember { mutableStateOf(0f) }
+    var cellHpx by remember { mutableStateOf(0f) }
+    var dragOverlay by remember { mutableStateOf<DragOverlay?>(null) }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .onGloballyPositioned { rootLc = it }
             .background(
                 Brush.verticalGradient(
                     listOf(Color(0xFF0EA5E9), Color(0xFF0B1B3A), Color(0xFF020617))
@@ -90,39 +109,50 @@ fun GameScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .padding(horizontal = 10.dp, vertical = 6.dp)
         ) {
-            TopBar(viewModel, state)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = "分数 ${state.score}",
-                color = Color(0xFFFBBF24),
-                fontSize = 28.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.align(Alignment.CenterHorizontally)
-            )
-            Text(
-                text = "最高分数：${state.highScore}",
-                color = Color.White.copy(alpha = 0.9f),
-                fontSize = 14.sp,
-                modifier = Modifier.align(Alignment.CenterHorizontally)
+            HeaderRow(viewModel, state)
+            Spacer(Modifier.height(6.dp))
+            BoardArea(
+                viewModel = viewModel,
+                state = state,
+                onBoardPositioned = { lc ->
+                    boardLc = lc
+                    val w = lc.size.width.toFloat()
+                    val h = lc.size.height.toFloat()
+                    cellWpx = w / SavedGame.GRID_SIZE
+                    cellHpx = h / SavedGame.GRID_SIZE
+                }
             )
             Spacer(Modifier.height(8.dp))
-            HammerRow(viewModel, state.hammerMode)
-            Spacer(Modifier.height(10.dp))
-            BoardArea(viewModel, state) { boardLc = it }
-            Spacer(Modifier.height(12.dp))
-            TrayArea(viewModel, state, boardLc)
+            SlotSelectorRow(viewModel, state)
+            Spacer(Modifier.height(6.dp))
+            TrayRow(
+                viewModel = viewModel,
+                state = state,
+                boardLc = boardLc,
+                dragOverlaySetter = { dragOverlay = it },
+                dragOverlayGetter = { dragOverlay }
+            )
         }
+
+        DragPreviewLayer(
+            drag = dragOverlay,
+            state = state,
+            boardLc = boardLc,
+            rootLc = rootLc,
+            cellWpx = cellWpx,
+            cellHpx = cellHpx,
+            viewModel = viewModel,
+            density = density
+        )
 
         if (state.paused && !state.showStuckDialog && !state.showExitConfirm) {
             PauseOverlay(viewModel)
         }
-
         if (state.showStuckDialog) {
             StuckDialog(viewModel)
         }
-
         if (state.showExitConfirm) {
             ExitDialog(viewModel, onLeaveAfterSave)
         }
@@ -130,60 +160,111 @@ fun GameScreen(
 }
 
 @Composable
-private fun TopBar(viewModel: GameViewModel, state: com.example.rossblocks.game.GameUiState) {
+private fun HeaderRow(viewModel: GameViewModel, state: com.example.rossblocks.game.GameUiState) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
+        verticalAlignment = Alignment.Top,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         IconButton(
             onClick = { viewModel.togglePause() },
             enabled = !state.showStuckDialog && !state.showExitConfirm,
             modifier = Modifier
-                .size(48.dp)
+                .size(46.dp)
                 .clip(CircleShape)
                 .background(Color(0xFF7C3AED))
         ) {
             Icon(Icons.Default.Pause, contentDescription = "暂停", tint = Color.White)
         }
-        Spacer(Modifier.weight(1f))
+
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "分数 ${state.score}",
+                color = Color(0xFFFBBF24),
+                fontSize = 32.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "最高 ${state.highScore}",
+                color = Color.White.copy(alpha = 0.88f),
+                fontSize = 17.sp
+            )
+        }
+
+        Column(
+            modifier = Modifier.widthIn(max = 148.dp),
+            horizontalAlignment = Alignment.End
+        ) {
+            IconButton(
+                onClick = { viewModel.toggleHammer() },
+                enabled = !state.showStuckDialog && !state.showExitConfirm,
+                modifier = Modifier
+                    .size(48.dp)
+                    .align(Alignment.End)
+                    .clip(CircleShape)
+                    .background(
+                        if (state.hammerMode) Color(0xFFFBBF24) else Color(0xFF334155)
+                    )
+                    .border(1.5.dp, Color.White.copy(alpha = 0.3f), CircleShape)
+            ) {
+                Icon(
+                    Icons.Default.Gavel,
+                    contentDescription = "锤子",
+                    tint = if (state.hammerMode) Color(0xFF0F172A) else Color.White
+                )
+            }
+            if (state.hammerMode) {
+                Text(
+                    "点格消除",
+                    color = Color(0xFFFDE68A),
+                    fontSize = 14.sp,
+                    lineHeight = 17.sp,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+            Text(
+                "四格均可拖入棋盘；点数字优先该槽。",
+                color = Color.White.copy(alpha = 0.78f),
+                fontSize = 13.sp,
+                lineHeight = 17.sp,
+                textAlign = TextAlign.End,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+        }
     }
 }
 
 @Composable
-private fun HammerRow(viewModel: GameViewModel, hammerMode: Boolean) {
-    val active = hammerMode
+private fun SlotSelectorRow(viewModel: GameViewModel, state: com.example.rossblocks.game.GameUiState) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.Center
+        horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        IconButton(
-            onClick = { viewModel.toggleHammer() },
-            modifier = Modifier
-                .size(56.dp)
-                .clip(CircleShape)
-                .background(
-                    if (active) Color(0xFFFBBF24) else Color(0xFF334155)
-                )
-                .border(2.dp, Color.White.copy(alpha = 0.35f), CircleShape)
-        ) {
-            Icon(
-                Icons.Default.Gavel,
-                contentDescription = "锤子",
-                tint = if (active) Color(0xFF0F172A) else Color.White
+        Text("优先槽位", color = Color.White.copy(alpha = 0.6f), fontSize = 14.sp)
+        repeat(4) { i ->
+            val sel = state.selectedTrayIndex == i
+            Text(
+                text = "${i + 1}",
+                color = if (sel) Color(0xFF0F172A) else Color.White,
+                fontSize = 17.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(if (sel) Color(0xFF22D3EE) else Color(0xFF1E293B))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { viewModel.selectTraySlot(i) }
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
             )
         }
-    }
-    if (active) {
-        Text(
-            "点击棋盘上的格子消除一格（次数不限）",
-            color = Color(0xFFFDE68A),
-            fontSize = 12.sp,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 4.dp),
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-        )
     }
 }
 
@@ -209,18 +290,11 @@ private fun BoardArea(
                     for (c in 0 until SavedGame.GRID_SIZE) {
                         val idx = r * SavedGame.GRID_SIZE + c
                         val colorIdx = state.grid[idx]
-                        val flashRow = r in state.flashRows
-                        val flashCol = c in state.flashCols
-                        val fill = when {
-                            flashRow || flashCol -> Color.White.copy(alpha = 0.92f)
-                            colorIdx >= 0 -> GameShapes.palette[colorIdx % GameShapes.palette.size]
-                            else -> Color(0xFF1E293B).copy(alpha = 0.35f)
-                        }
+                        val pulse = state.pulseClearCell == (r to c)
                         Box(
                             modifier = Modifier
                                 .size(cell)
-                                .border(0.5.dp, Color(0xFF38BDF8).copy(alpha = 0.25f))
-                                .background(fill)
+                                .border(0.5.dp, Color(0xFF38BDF8).copy(alpha = 0.22f))
                                 .pointerInput(state.hammerMode, state.paused, state.showStuckDialog) {
                                     detectTapGestures(
                                         onTap = {
@@ -230,7 +304,32 @@ private fun BoardArea(
                                         }
                                     )
                                 }
-                        )
+                        ) {
+                            when {
+                                colorIdx >= 0 -> {
+                                    JewelCell(
+                                        base = GameShapes.palette[colorIdx % GameShapes.palette.size],
+                                        modifier = Modifier.fillMaxSize(),
+                                        pulse = pulse
+                                    )
+                                }
+
+                                else -> {
+                                    Box(
+                                        Modifier
+                                            .fillMaxSize()
+                                            .background(Color(0xFF1E293B).copy(alpha = 0.35f))
+                                    )
+                                }
+                            }
+                            if (pulse) {
+                                Box(
+                                    Modifier
+                                        .fillMaxSize()
+                                        .background(Color.White.copy(alpha = 0.35f))
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -239,109 +338,105 @@ private fun BoardArea(
 }
 
 @Composable
-private fun TrayArea(
+private fun TrayRow(
     viewModel: GameViewModel,
     state: com.example.rossblocks.game.GameUiState,
-    boardLc: LayoutCoordinates?
+    boardLc: LayoutCoordinates?,
+    dragOverlaySetter: (DragOverlay?) -> Unit,
+    dragOverlayGetter: () -> DragOverlay?
 ) {
-    var headLc by remember { mutableStateOf<LayoutCoordinates?>(null) }
-    var drag by remember { mutableStateOf(Offset.Zero) }
-    var dragging by remember { mutableStateOf(false) }
-    var lastInPiece by remember { mutableStateOf(Offset.Zero) }
-
-    Column(Modifier.fillMaxWidth()) {
-        Text(
-            "拖动队首图形到棋盘，或点击格子以左上角对齐放置",
-            color = Color.White.copy(alpha = 0.75f),
-            fontSize = 11.sp,
-            modifier = Modifier.padding(bottom = 6.dp),
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.Bottom
-        ) {
-            state.pieces.forEachIndexed { index, piece ->
-                val isHead = index == 0
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(4.dp)
-                        .then(
-                            if (isHead) {
-                                Modifier
-                                    .onGloballyPositioned { headLc = it }
-                                    .pointerInput(
-                                        state.pieces,
-                                        state.paused,
-                                        state.hammerMode,
-                                        state.showStuckDialog
-                                    ) {
-                                        if (state.paused || state.hammerMode || state.showStuckDialog) {
-                                            return@pointerInput
-                                        }
-                                        detectDragGestures(
-                                            onDragStart = {
-                                                dragging = true
-                                                drag = Offset.Zero
-                                            },
-                                            onDrag = { change, amount ->
-                                                change.consume()
-                                                drag += amount
-                                                lastInPiece = change.position
-                                            },
-                                            onDragCancel = {
-                                                dragging = false
-                                                drag = Offset.Zero
-                                            },
-                                            onDragEnd = {
-                                                dragging = false
-                                                val blc = boardLc
-                                                val hlc = headLc
-                                                if (blc != null && hlc != null && blc.isAttached && hlc.isAttached) {
-                                                    val windowPos = hlc.localToWindow(lastInPiece)
-                                                    val localBoard = blc.windowToLocal(windowPos)
-                                                    val w = blc.size.width.toFloat()
-                                                    val h = blc.size.height.toFloat()
-                                                    val cw = w / SavedGame.GRID_SIZE
-                                                    val ch = h / SavedGame.GRID_SIZE
-                                                    val col = floor((localBoard.x / cw).toDouble()).toInt()
-                                                    val row = floor((localBoard.y / ch).toDouble()).toInt()
-                                                    if (row in 0 until SavedGame.GRID_SIZE && col in 0 until SavedGame.GRID_SIZE) {
-                                                        viewModel.tapCell(row, col)
-                                                    }
-                                                }
-                                                drag = Offset.Zero
-                                            }
-                                        )
-                                    }
-                            } else Modifier
-                        )
-                ) {
-                    MiniPiece(
-                        piece = piece,
-                        modifier = Modifier
-                            .then(
-                                if (isHead && dragging) {
-                                    Modifier.offset {
-                                        IntOffset(drag.x.toInt(), drag.y.toInt())
-                                    }
-                                } else Modifier
-                            )
+    val boardLcState = rememberUpdatedState(boardLc)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.Bottom
+    ) {
+        state.pieces.forEachIndexed { index, piece ->
+            var slotLc by remember { mutableStateOf<LayoutCoordinates?>(null) }
+            val slotLcState = rememberUpdatedState(slotLc)
+            val draggingHere = dragOverlayGetter()?.slot == index
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 3.dp)
+                    .onGloballyPositioned { slotLc = it }
+                    .then(
+                        if (state.selectedTrayIndex == index) {
+                            Modifier.border(2.dp, Color(0xFF22D3EE), RoundedCornerShape(10.dp))
+                        } else Modifier
                     )
-                }
+                    .pointerInput(
+                        index,
+                        state.pieces,
+                        state.paused,
+                        state.hammerMode,
+                        state.showStuckDialog
+                    ) {
+                        if (state.paused || state.hammerMode || state.showStuckDialog) {
+                            return@pointerInput
+                        }
+                        detectDragGestures(
+                            onDragStart = { pos ->
+                                viewModel.selectTraySlot(index)
+                                val lc = slotLcState.value
+                                if (lc != null && lc.isAttached) {
+                                    dragOverlaySetter(
+                                        DragOverlay(
+                                            slot = index,
+                                            fingerWindow = lc.localToWindow(pos)
+                                        )
+                                    )
+                                }
+                            },
+                            onDrag = { change, _ ->
+                                change.consume()
+                                val lc = slotLcState.value
+                                val cur = dragOverlayGetter()
+                                if (lc != null && lc.isAttached && cur != null) {
+                                    dragOverlaySetter(
+                                        cur.copy(fingerWindow = lc.localToWindow(change.position))
+                                    )
+                                }
+                            },
+                            onDragCancel = { dragOverlaySetter(null) },
+                            onDragEnd = {
+                                val cur = dragOverlayGetter()
+                                val blc = boardLcState.value
+                                if (cur != null && blc != null && blc.isAttached) {
+                                    val local = blc.windowToLocal(cur.fingerWindow)
+                                    val w = blc.size.width.toFloat()
+                                    val h = blc.size.height.toFloat()
+                                    val cw = w / SavedGame.GRID_SIZE
+                                    val ch = h / SavedGame.GRID_SIZE
+                                    if (local.x in 0f..w && local.y in 0f..h) {
+                                        val col = floor((local.x / cw).toDouble()).toInt()
+                                        val row = floor((local.y / ch).toDouble()).toInt()
+                                        if (row in 0 until SavedGame.GRID_SIZE && col in 0 until SavedGame.GRID_SIZE) {
+                                            viewModel.tryPlaceFromDrag(cur.slot, row, col)
+                                        }
+                                    }
+                                }
+                                dragOverlaySetter(null)
+                            }
+                        )
+                    }
+            ) {
+                TrayPieceMini(
+                    piece = piece,
+                    cellDp = 22.dp,
+                    modifier = Modifier.alpha(if (draggingHere) 0f else 1f)
+                )
             }
         }
     }
 }
 
 @Composable
-private fun MiniPiece(piece: UiPiece, modifier: Modifier = Modifier) {
+private fun TrayPieceMini(piece: UiPiece, cellDp: Dp, modifier: Modifier = Modifier) {
     val shape = GameShapes.shapes.getOrNull(piece.shapeIndex)
     if (shape == null) {
-        Spacer(modifier.size(72.dp))
+        Spacer(Modifier.size(80.dp))
         return
     }
     val maxR = shape.maxOf { it.first } + 1
@@ -349,10 +444,7 @@ private fun MiniPiece(piece: UiPiece, modifier: Modifier = Modifier) {
     val color = GameShapes.palette[piece.colorIndex % GameShapes.palette.size]
     Column(
         modifier = modifier
-            .size(72.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(Color(0xFF0F172A).copy(alpha = 0.4f))
-            .padding(6.dp)
+            .padding(vertical = 4.dp)
     ) {
         for (r in 0 until maxR) {
             Row {
@@ -360,18 +452,109 @@ private fun MiniPiece(piece: UiPiece, modifier: Modifier = Modifier) {
                     val on = shape.contains(r to c)
                     Box(
                         modifier = Modifier
-                            .size(16.dp)
+                            .size(cellDp)
                             .padding(1.dp)
-                            .background(
-                                if (on) color else Color.Transparent,
-                                RoundedCornerShape(3.dp)
+                    ) {
+                        if (on) {
+                            JewelCell(
+                                base = color,
+                                modifier = Modifier.fillMaxSize()
                             )
-                            .border(
-                                0.5.dp,
-                                if (on) Color.White.copy(alpha = 0.35f) else Color.Transparent,
-                                RoundedCornerShape(3.dp)
-                            )
-                    )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DragPreviewLayer(
+    drag: DragOverlay?,
+    state: com.example.rossblocks.game.GameUiState,
+    boardLc: LayoutCoordinates?,
+    rootLc: LayoutCoordinates?,
+    cellWpx: Float,
+    cellHpx: Float,
+    viewModel: GameViewModel,
+    density: androidx.compose.ui.unit.Density
+) {
+    val d = drag ?: return
+    val rl = rootLc ?: return
+    val bl = boardLc ?: return
+    if (!bl.isAttached || !rl.isAttached) return
+    val piece = state.pieces.getOrNull(d.slot) ?: return
+    val shape = GameShapes.shapes.getOrNull(piece.shapeIndex) ?: return
+    val maxR = shape.maxOf { it.first } + 1
+    val maxC = shape.maxOf { it.second } + 1
+
+    val localB = bl.windowToLocal(d.fingerWindow)
+    val w = bl.size.width.toFloat()
+    val h = bl.size.height.toFloat()
+    val onBoard = localB.x in 0f..w && localB.y in 0f..h
+    val anchorCol = floor((localB.x / cellWpx).toDouble()).toInt()
+    val anchorRow = floor((localB.y / cellHpx).toDouble()).toInt()
+    val validOnBoard = onBoard &&
+        anchorRow in 0 until SavedGame.GRID_SIZE &&
+        anchorCol in 0 until SavedGame.GRID_SIZE &&
+        viewModel.canPlacePreview(d.slot, anchorRow, anchorCol)
+
+    val topLeftRoot = if (onBoard) {
+        val topLeftBoardPx = Offset(anchorCol * cellWpx, anchorRow * cellHpx)
+        val topLeftWin = bl.localToWindow(topLeftBoardPx)
+        rl.windowToLocal(topLeftWin)
+    } else {
+        val fingerRoot = rl.windowToLocal(d.fingerWindow)
+        Offset(
+            fingerRoot.x - (maxC * cellWpx) / 2f,
+            fingerRoot.y - (maxR * cellHpx) / 2f
+        )
+    }
+
+    val widthDp = with(density) { (maxC * cellWpx).toDp() }
+    val heightDp = with(density) { (maxR * cellHpx).toDp() }
+    val cellDpW = with(density) { cellWpx.toDp() }
+    val cellDpH = with(density) { cellHpx.toDp() }
+
+    val color = GameShapes.palette[piece.colorIndex % GameShapes.palette.size]
+    val invalidTint = !validOnBoard || !onBoard
+
+    Box(
+        Modifier
+            .fillMaxSize()
+    ) {
+        Column(
+            Modifier
+                .offset {
+                    IntOffset(topLeftRoot.x.toInt(), topLeftRoot.y.toInt())
+                }
+                .size(widthDp, heightDp)
+        ) {
+            for (r in 0 until maxR) {
+                Row(Modifier.fillMaxWidth()) {
+                    for (c in 0 until maxC) {
+                        val on = shape.contains(r to c)
+                        Box(
+                            Modifier
+                                .size(cellDpW, cellDpH)
+                                .padding(1.dp)
+                        ) {
+                            if (on) {
+                                JewelCell(
+                                    base = if (invalidTint) color.copy(alpha = 0.55f) else color,
+                                    modifier = Modifier.fillMaxSize(),
+                                    pulse = false
+                                )
+                                if (invalidTint) {
+                                    Box(
+                                        Modifier
+                                            .fillMaxSize()
+                                            .border(1.5.dp, Color(0xFFFB7185), RoundedCornerShape(4.dp))
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -387,11 +570,11 @@ private fun PauseOverlay(viewModel: GameViewModel) {
         contentAlignment = Alignment.Center
     ) {
         Surface(shape = RoundedCornerShape(16.dp), color = Color(0xFF1E293B)) {
-            Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("已暂停", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(16.dp))
+            Column(Modifier.padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("已暂停", color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(18.dp))
                 Button(onClick = { viewModel.togglePause() }) {
-                    Text("继续游戏")
+                    Text("继续游戏", fontSize = 18.sp)
                 }
             }
         }
@@ -402,18 +585,24 @@ private fun PauseOverlay(viewModel: GameViewModel) {
 private fun StuckDialog(viewModel: GameViewModel) {
     AlertDialog(
         onDismissRequest = { },
-        title = { Text("无法放置队首图形") },
+        title = {
+            Text("没有可放的图形", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        },
         text = {
-            Text("可以用锤子消除任意一格（不限次数），或重新开始本局。清空棋盘前若当前分数更高，会更新最高分数。")
+            Text(
+                "四个图形都无法放入棋盘时可用锤子消除一格（不限次数），或重新开始。清盘前若分数更高会更新最高分。",
+                fontSize = 17.sp,
+                lineHeight = 24.sp
+            )
         },
         confirmButton = {
             TextButton(onClick = { viewModel.stuckChooseHammer() }) {
-                Text("使用锤子")
+                Text("使用锤子", fontSize = 17.sp)
             }
         },
         dismissButton = {
             TextButton(onClick = { viewModel.stuckRestart() }) {
-                Text("重新开始")
+                Text("重新开始", fontSize = 17.sp)
             }
         }
     )
@@ -423,16 +612,24 @@ private fun StuckDialog(viewModel: GameViewModel) {
 private fun ExitDialog(viewModel: GameViewModel, onLeave: () -> Unit) {
     AlertDialog(
         onDismissRequest = { viewModel.dismissExitConfirm() },
-        title = { Text("退出游戏？") },
-        text = { Text("将保存本局进度（含棋盘与四个图形），下次可选择「继续之前」。") },
+        title = {
+            Text("退出游戏？", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        },
+        text = {
+            Text(
+                "将保存本局进度（含棋盘与四个图形），下次可选择「继续之前」。",
+                fontSize = 17.sp,
+                lineHeight = 24.sp
+            )
+        },
         confirmButton = {
             TextButton(onClick = { viewModel.confirmExit(onLeave) }) {
-                Text("保存并退出")
+                Text("保存并退出", fontSize = 17.sp)
             }
         },
         dismissButton = {
             TextButton(onClick = { viewModel.dismissExitConfirm() }) {
-                Text("取消")
+                Text("取消", fontSize = 17.sp)
             }
         }
     )

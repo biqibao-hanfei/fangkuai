@@ -77,7 +77,7 @@ fun MenuScreen(
             text = "罗斯方块",
             style = MaterialTheme.typography.headlineLarge.copy(
                 fontWeight = FontWeight.Bold,
-                fontSize = 36.sp,
+                fontSize = 42.sp,
                 color = Color.White
             )
         )
@@ -89,9 +89,9 @@ fun MenuScreen(
                 containerColor = Color(0xFF38BDF8),
                 contentColor = Color(0xFF0F172A)
             ),
-            modifier = Modifier.height(52.dp)
+            modifier = Modifier.height(56.dp)
         ) {
-            Text("开始游戏", fontSize = 18.sp)
+            Text("开始游戏", fontSize = 21.sp, fontWeight = FontWeight.SemiBold)
         }
         Spacer(Modifier.height(16.dp))
         Button(
@@ -101,24 +101,39 @@ fun MenuScreen(
                 containerColor = Color(0xFF334155),
                 contentColor = Color.White
             ),
-            modifier = Modifier.height(52.dp)
+            modifier = Modifier.height(56.dp)
         ) {
-            Text("退出游戏", fontSize = 18.sp)
+            Text("退出游戏", fontSize = 21.sp, fontWeight = FontWeight.SemiBold)
         }
     }
 
     if (showStartChoice) {
+        val dialogTitleSize = 26.sp
+        val dialogBodySize = 20.sp
+        val dialogButtonSize = 19.sp
         AlertDialog(
             onDismissRequest = { showStartChoice = false },
-            title = { Text("选择开局") },
-            text = { Text("开始新局将清除未结束的进度存档（最高分仍会保留）。") },
+            title = {
+                Text(
+                    "选择开局",
+                    fontSize = dialogTitleSize,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    "开始新局将清除未结束的进度存档（最高分仍会保留）。",
+                    fontSize = dialogBodySize,
+                    lineHeight = 28.sp
+                )
+            },
             confirmButton = {
                 TextButton(
                     onClick = {
                         showStartChoice = false
                         onStartNew()
                     }
-                ) { Text("新局") }
+                ) { Text("新局", fontSize = dialogButtonSize) }
             },
             dismissButton = {
                 TextButton(
@@ -127,7 +142,7 @@ fun MenuScreen(
                         onContinue()
                     },
                     enabled = hasSave
-                ) { Text("继续之前") }
+                ) { Text("继续之前", fontSize = dialogButtonSize) }
             }
         )
     }
