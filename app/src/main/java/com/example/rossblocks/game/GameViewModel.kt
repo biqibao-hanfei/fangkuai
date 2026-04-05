@@ -263,15 +263,13 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
             val order = buildClearOrder(snapshotRows, snapshotCols)
             var step = 0
-            for (chunk in order.chunked(10)) {
-                delay(2)
-                for ((r, c) in chunk) {
-                    sound.playClearStep(step++)
-                    uiState = uiState.copy(pulseClearCell = r to c)
-                    val i = r * SavedGame.GRID_SIZE + c
-                    if (i in grid.indices) grid[i] = -1
-                    uiState = uiState.copy(grid = grid.toList())
-                }
+            for ((r, c) in order) {
+                delay(7)
+                sound.playClearStep(step++)
+                uiState = uiState.copy(pulseClearCell = r to c)
+                val i = r * SavedGame.GRID_SIZE + c
+                if (i in grid.indices) grid[i] = -1
+                uiState = uiState.copy(grid = grid.toList())
             }
 
             sound.playClearFinish()

@@ -69,14 +69,42 @@ import com.example.rossblocks.game.GameViewModel
 import com.example.rossblocks.game.SavedGame
 import com.example.rossblocks.game.UiPiece
 import kotlin.math.floor
+import kotlin.math.min
 
 private data class DragOverlay(
     val slot: Int,
     val fingerWindow: Offset
 )
 
-/** 棋盘上预览与落点：手指上移一点，避免挡住格心 */
-private fun fingerLiftPx(cellHpx: Float): Float = cellHpx * 0.55f + 40f
+/** 形状底边在触点略上方；上限约半格，避免最底一行被算到上一行 */
+private fun effectiveGapPx(cellHpx: Float): Float =
+    min(maxOf(12f, cellHpx * 0.08f), cellHpx * 0.45f)
+
+/**
+ * 手指在棋盘内时：形状底边对齐触点上方 [gap]，据此算边界框左上角格坐标（夹紧使整块在 10×10 内）。
+ * 与旧版「格心 + fingerLift」不同，可避免最底一行被算到上一行。
+ */
+private fun anchorFromBottomAlignedFinger(
+    localX: Float,
+    localY: Float,
+    maxR: Int,
+    maxC: Int,
+    cw: Float,
+    ch: Float,
+    boardW: Float,
+    boardH: Float
+): Pair<Int, Int> {
+    val shapeW = maxC * cw
+    val shapeH = maxR * ch
+    val gap = effectiveGapPx(ch)
+    val bottomY = (localY - gap).coerceIn(shapeH, boardH)
+    val topY = bottomY - shapeH
+    var leftX = localX - shapeW / 2f
+    leftX = leftX.coerceIn(0f, boardW - shapeW)
+    val anchorRow = floor((topY / ch).toDouble()).toInt().coerceIn(0, SavedGame.GRID_SIZE - maxR)
+    val anchorCol = floor((leftX / cw).toDouble()).toInt().coerceIn(0, SavedGame.GRID_SIZE - maxC)
+    return anchorRow to anchorCol
+}
 
 @Composable
 fun GameScreen(
@@ -138,7 +166,6 @@ fun GameScreen(
                 viewModel = viewModel,
                 state = state,
                 boardLc = boardLc,
-                cellHpx = cellHpx,
                 dragOverlaySetter = { dragOverlay = it },
                 dragOverlayGetter = { dragOverlay }
             )
@@ -227,16 +254,6 @@ private fun HeaderRow(viewModel: GameViewModel, state: com.example.rossblocks.ga
                     Icons.Default.Gavel,
                     contentDescription = "锤子",
                     tint = if (state.hammerMode) Color(0xFF0F172A) else Color.White
-                )
-            }
-            if (state.hammerMode) {
-                Text(
-                    "点格消除",
-                    color = Color(0xFFFDE68A),
-                    fontSize = 14.sp,
-                    lineHeight = 17.sp,
-                    textAlign = TextAlign.End,
-                    modifier = Modifier.padding(top = 2.dp)
                 )
             }
             Text(
@@ -353,12 +370,10 @@ private fun TrayRow(
     viewModel: GameViewModel,
     state: com.example.rossblocks.game.GameUiState,
     boardLc: LayoutCoordinates?,
-    cellHpx: Float,
     dragOverlaySetter: (DragOverlay?) -> Unit,
     dragOverlayGetter: () -> DragOverlay?
 ) {
     val boardLcState = rememberUpdatedState(boardLc)
-    val cellHState = rememberUpdatedState(cellHpx)
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly,
@@ -381,7 +396,7 @@ private fun TrayRow(
                     )
                     .pointerInput(
                         index,
-                        state.pieces,
+                        state,
                         state.paused,
                         state.hammerMode,
                         state.showStuckDialog,
@@ -415,12 +430,16 @@ private fun TrayRow(
                                         val h = blc.size.height.toFloat()
                                         val cw = w / SavedGame.GRID_SIZE
                                         val ch = h / SavedGame.GRID_SIZE
-                                        val cellH = if (cellHState.value > 1f) cellHState.value else ch
-                                        val lift = fingerLiftPx(cellH)
                                         if (local.x in 0f..w && local.y in 0f..h) {
-                                            val col = floor((local.x / cw).toDouble()).toInt()
-                                            val row = floor(((local.y - lift) / ch).coerceAtLeast(0f).toDouble()).toInt()
-                                            if (row in 0 until SavedGame.GRID_SIZE && col in 0 until SavedGame.GRID_SIZE) {
+                                            val piece = state.pieces.getOrNull(cur.slot)
+                                            val shapeCells =
+                                                piece?.let { GameShapes.shapes.getOrNull(it.shapeIndex) }
+                                            if (piece != null && shapeCells != null) {
+                                                val maxR = shapeCells.maxOf { it.first } + 1
+                                                val maxC = shapeCells.maxOf { it.second } + 1
+                                                val (row, col) = anchorFromBottomAlignedFinger(
+                                                    local.x, local.y, maxR, maxC, cw, ch, w, h
+                                                )
                                                 viewModel.tryPlaceFromDrag(cur.slot, row, col)
                                             }
                                         }
@@ -512,18 +531,21 @@ private fun DragPreviewLayer(
         val w = bl.size.width.toFloat()
         val h = bl.size.height.toFloat()
         val onBoard = localB.x in 0f..w && localB.y in 0f..h
-        val lift = fingerLiftPx(cellHpx)
-        val localAdjY = (localB.y - lift).coerceAtLeast(0f)
-        val anchorCol = floor((localB.x / cellWpx).toDouble()).toInt()
-        val anchorRow = floor((localAdjY / cellHpx).toDouble()).toInt()
-        val validOnBoard = onBoard &&
-            anchorRow in 0 until SavedGame.GRID_SIZE &&
-            anchorCol in 0 until SavedGame.GRID_SIZE &&
-            viewModel.canPlacePreview(d.slot, anchorRow, anchorCol)
 
         val shapeW = maxC * cellWpx
         val shapeH = maxR * cellHpx
-        val gapBelowFinger = maxOf(12f, cellHpx * 0.08f)
+        val gapBelowFinger = effectiveGapPx(cellHpx)
+
+        val (anchorRow, anchorCol) = if (onBoard) {
+            anchorFromBottomAlignedFinger(
+                localB.x, localB.y, maxR, maxC, cellWpx, cellHpx, w, h
+            )
+        } else {
+            0 to 0
+        }
+
+        val validOnBoard = onBoard &&
+            viewModel.canPlacePreview(d.slot, anchorRow, anchorCol)
 
         val topLeftRoot = if (onBoard) {
             val topLeftBoardPx = Offset(anchorCol * cellWpx, anchorRow * cellHpx)
